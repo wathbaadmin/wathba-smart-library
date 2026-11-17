@@ -364,8 +364,8 @@ export async function fetchFullCloudState(): Promise<Record<string, any> | null>
     ] = await Promise.allSettled([
       client.from('books').select('*').order('created_at', { ascending: false }),
       client.from('book_copies').select('*'),
-      client.from('categories').select('*'),
-      client.from('students').select('*'),
+      client.from('categories').select('*').order('display_order', { ascending: true }),
+      client.from('students').select('*').order('created_at', { ascending: false }),
       client.from('staff_users').select('*'),
       client.from('loans').select('*').order('loan_date', { ascending: false }),
       client.from('reservations').select('*'),
@@ -398,8 +398,62 @@ export async function fetchFullCloudState(): Promise<Record<string, any> | null>
       }));
     }
 
+    if (copiesRes.status === 'fulfilled' && Array.isArray(copiesRes.value.data) && copiesRes.value.data.length > 0) {
+      result.copies = copiesRes.value.data.map((row) => ({
+        id: String(row.id),
+        bookId: String(row.book_id),
+        copyCode: row.copy_code,
+        qrData: row.qr_data,
+        status: row.status,
+        condition: row.condition,
+        shelfLocation: row.shelf_location,
+        notes: row.notes,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
+    }
+
+    if (categoriesRes.status === 'fulfilled' && Array.isArray(categoriesRes.value.data) && categoriesRes.value.data.length > 0) {
+      result.categories = categoriesRes.value.data.map((row) => ({
+        id: String(row.id),
+        name: row.name,
+        code: row.code,
+        description: row.description,
+        iconName: row.icon_name || 'BookOpen',
+        displayOrder: row.display_order,
+      }));
+    }
+
     if (studentsRes.status === 'fulfilled' && Array.isArray(studentsRes.value.data) && studentsRes.value.data.length > 0) {
       result.students = studentsRes.value.data.map(mapSupabaseStudentToStudent);
+    }
+
+    if (loansRes.status === 'fulfilled' && Array.isArray(loansRes.value.data) && loansRes.value.data.length > 0) {
+      result.loans = loansRes.value.data.map((row) => ({
+        id: String(row.id),
+        copyId: String(row.copy_id),
+        studentId: String(row.student_id),
+        supervisorId: String(row.supervisor_id || ''),
+        loanDate: row.loan_date,
+        dueDate: row.due_date,
+        returnDate: row.return_date || undefined,
+        status: row.status,
+        renewalCount: Number(row.renewal_count) || 0,
+        notes: row.notes || undefined,
+        createdAt: row.created_at || row.loan_date,
+      }));
+    }
+
+    if (reservationsRes.status === 'fulfilled' && Array.isArray(reservationsRes.value.data) && reservationsRes.value.data.length > 0) {
+      result.reservations = reservationsRes.value.data.map((row) => ({
+        id: String(row.id),
+        bookId: String(row.book_id),
+        studentId: String(row.student_id),
+        reservationDate: row.reservation_date || row.created_at,
+        status: row.status,
+        assignedCopyId: row.assigned_copy_id || undefined,
+        notes: row.notes || undefined,
+      }));
     }
 
     return Object.keys(result).length > 0 ? result : null;

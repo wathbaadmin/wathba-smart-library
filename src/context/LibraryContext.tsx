@@ -822,29 +822,101 @@ export const LibraryProvider: React.FC<{ children: React.ReactNode }> = ({ child
     );
   }, [copies]);
 
-  // المزامنة المركزية المباشرة مع قاعدة البيانات السحابية Supabase لجلب سجلات الطلاب الأصلية
+  // المزامنة المركزية المباشرة مع قاعدة البيانات السحابية Supabase لجلب وتحديث كافة السجلات
   useEffect(() => {
     if (!isSupabaseConfigured()) return;
     let isMounted = true;
+
+    // 1. جلب الحالة الكاملة المحدثة من قاعدة البيانات السحابية المركزية عند بدء التشغيل
     (async () => {
       try {
-        const cloudStudents = await fetchAllStudentsFromSupabase();
-        if (cloudStudents && cloudStudents.length > 0 && isMounted) {
-          setStudents((prev) => {
-            const cloudIds = new Set(cloudStudents.map((s) => s.id));
-            const cloudCodes = new Set(cloudStudents.map((s) => s.internalId.toUpperCase()));
-            const localOnly = prev.filter(
-              (p) => !cloudIds.has(p.id) && !cloudCodes.has(p.internalId.toUpperCase())
-            );
-            return [...cloudStudents, ...localOnly];
-          });
+        const fullCloud = await fetchFullCloudState();
+        if (fullCloud && isMounted) {
+          if (Array.isArray(fullCloud.students) && fullCloud.students.length > 0) {
+            setStudents((prev) => {
+              const cloudIds = new Set(fullCloud.students.map((s: any) => s.id));
+              const cloudCodes = new Set(fullCloud.students.map((s: any) => s.internalId.toUpperCase()));
+              const localOnly = prev.filter(
+                (p) => !cloudIds.has(p.id) && !cloudCodes.has(p.internalId.toUpperCase())
+              );
+              return [...fullCloud.students, ...localOnly];
+            });
+          }
+          if (Array.isArray(fullCloud.books) && fullCloud.books.length > 0) {
+            setBooks(fullCloud.books);
+          }
+          if (Array.isArray(fullCloud.copies) && fullCloud.copies.length > 0) {
+            setCopies(fullCloud.copies);
+          }
+          if (Array.isArray(fullCloud.categories) && fullCloud.categories.length > 0) {
+            setCategories(fullCloud.categories);
+          }
+          if (Array.isArray(fullCloud.loans) && fullCloud.loans.length > 0) {
+            setLoans(fullCloud.loans);
+          }
+          if (Array.isArray(fullCloud.reservations) && fullCloud.reservations.length > 0) {
+            setReservations(fullCloud.reservations);
+          }
         }
       } catch (err) {
-        console.warn('فشل مزامنة الطلاب المبدئية من السحابة:', err);
+        console.warn('فشل جلب الحالة السحابية المبدئية:', err);
       }
     })();
+
+    // 2. الاستماع اللحظي المباشر عبر Supabase Realtime لأي إضافة أو تعديل من أي جهاز آخر في العالم
+    const unsubscribeSync = centralSync.subscribeToSyncEvents((event) => {
+      if (!isMounted || !event || !event.entity) return;
+
+      const { entity, action, data, recordId } = event;
+
+      if (entity === 'students' && data) {
+        setStudents((prev) => {
+          if (action === 'DELETE') {
+            return prev.filter((s) => s.id !== (recordId || data.id));
+          }
+          const exists = prev.some((s) => s.id === data.id);
+          return exists ? prev.map((s) => (s.id === data.id ? { ...s, ...data } : s)) : [data, ...prev];
+        });
+      } else if (entity === 'books' && data) {
+        setBooks((prev) => {
+          if (action === 'DELETE') {
+            return prev.filter((b) => b.id !== (recordId || data.id));
+          }
+          const exists = prev.some((b) => b.id === data.id);
+          return exists ? prev.map((b) => (b.id === data.id ? { ...b, ...data } : b)) : [data, ...prev];
+        });
+      } else if (entity === 'copies' && data) {
+        setCopies((prev) => {
+          if (action === 'DELETE') {
+            return prev.filter((c) => c.id !== (recordId || data.id));
+          }
+          const exists = prev.some((c) => c.id === data.id);
+          return exists ? prev.map((c) => (c.id === data.id ? { ...c, ...data } : c)) : [data, ...prev];
+        });
+      } else if (entity === 'loans' && data) {
+        setLoans((prev) => {
+          if (action === 'DELETE') {
+            return prev.filter((l) => l.id !== (recordId || data.id));
+          }
+          const exists = prev.some((l) => l.id === data.id);
+          return exists ? prev.map((l) => (l.id === data.id ? { ...l, ...data } : l)) : [data, ...prev];
+        });
+      } else if (entity === 'reservations' && data) {
+        setReservations((prev) => {
+          if (action === 'DELETE') {
+            return prev.filter((r) => r.id !== (recordId || data.id));
+          }
+          const exists = prev.some((r) => r.id === data.id);
+          return exists ? prev.map((r) => (r.id === data.id ? { ...r, ...data } : r)) : [data, ...prev];
+        });
+      } else if (entity === 'settings' && data) {
+        setSettings((prev) => ({ ...prev, ...data }));
+      }
+    });
+
     return () => {
       isMounted = false;
+      unsubscribeSync();
     };
   }, []);
 
@@ -1034,6 +1106,10 @@ export const LibraryProvider: React.FC<{ children: React.ReactNode }> = ({ child
       newState: { loanId, copyId: actualCopyId, studentId, dueDate },
     });
 
+    centralSync.broadcastMutation({ entity: 'loans', action: 'INSERT', data: newLoan, recordId: newLoan.id });
+    syncEntityRecordToSupabase('loans', newLoan).catch(() => {});
+    centralSync.broadcastMutation({ entity: 'copies', action: 'UPDATE', data: { id: actualCopyId, status: 'borrowed' }, recordId: actualCopyId });
+
     return { success: true, loan: newLoan };
   };
 
@@ -1149,6 +1225,18 @@ export const LibraryProvider: React.FC<{ children: React.ReactNode }> = ({ child
       entityId: loanId,
       notes: `تم استرجاع النسخة ${copy?.copyCode}. الحالة: ${conditionRating}`,
     });
+
+    const updatedLoanObj = {
+      ...loan,
+      status: 'returned' as const,
+      returnDate: returnTime,
+      returnedToSupervisorId: supervisorId,
+    };
+    centralSync.broadcastMutation({ entity: 'loans', action: 'UPDATE', data: updatedLoanObj, recordId: loanId });
+    syncEntityRecordToSupabase('loans', updatedLoanObj).catch(() => {});
+    if (copy) {
+      centralSync.broadcastMutation({ entity: 'copies', action: 'UPDATE', data: { id: copy.id, status: nextStatus, condition: conditionRating }, recordId: copy.id });
+    }
 
     return { success: true };
   };
